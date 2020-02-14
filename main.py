@@ -65,9 +65,11 @@ def fitPolyRegression(traj, action, polydegree, transitions):
     polynomial_features = PolynomialFeatures(degree=polydegree)
     model = LinearRegression()
     dynamicMat = []
+    rmse = 0
     for k in range(0, nseg-1):
         if transitions[k + 1] - transitions[k] > 1:  # ensuring at least one sample is there between two transition point
             coeffVect = []
+            print("Segment Number: ", k)
             for d in range(0, dim):
                 y_target = traj[(transitions[k]+1):transitions[k + 1], d]
                 x_train = traj[transitions[k]:(transitions[k + 1]-1), :]
@@ -75,6 +77,12 @@ def fitPolyRegression(traj, action, polydegree, transitions):
                 feature_data_array = np.append(x_train, u_train, axis=1)
                 feature_poly = polynomial_features.fit_transform(feature_data_array)
                 model.fit(feature_poly, y_target)
+                y_pred = model.predict(feature_poly)
+                rmse = np.sqrt(mean_squared_error(y_target, y_pred))
+                plt.plot(y_target, 'r')
+                plt.plot(y_pred, 'b')
+                plt.show()
+                print("RMSE : ", rmse)
                 if d == 0:
                     coeffVect = np.array(model.coef_)
                 else:
@@ -95,7 +103,7 @@ def identifyTransitions(traj, window_size):
         demo_data_array[inc, :] = np.reshape(window, (1, dim * window_size))
         inc = inc + 1
 
-    estimator = BayesianGaussianMixture(n_components=10, n_init=10, max_iter=300, degrees_of_freedom_prior=4, weight_concentration_prior=1e-1, init_params='random', verbose=False)
+    estimator = BayesianGaussianMixture(n_components=10, n_init=10, max_iter=300, weight_concentration_prior=1e-2, init_params='random', verbose=False)
     labels = estimator.fit_predict(demo_data_array)
     # print(estimator.weights_)
     filtabels = smoothing(labels)
@@ -125,7 +133,7 @@ f = open("blocks_exp_raw_data_rs_1_mm_d40.p", "rb")
 # data.encoding = 'latin1'
 p = pickle.load(f, encoding='latin1')
 f.close()
-window_size = 2
+window_size = 3
 rollout_data_array = []
 
 
@@ -133,7 +141,7 @@ traj = p['X'][5, :, :]
 action = p['U'][5, :, :]
 tp = identifyTransitions(traj, window_size)
 
-ndata = 50
+ndata = 5
 
 
 for rollout in range(0, ndata):
@@ -142,6 +150,24 @@ for rollout in range(0, ndata):
     action = p['U'][rollout, :, :]
 
     tp = identifyTransitions(traj, window_size)
+
+    X1 = [t[0] for t in traj]
+    Y1 = [t[1] for t in traj]
+    # plt.subplot(1, ndata, rollout + 1)
+    plt.subplot(1, 2, 1)
+    plt.plot(X1, 'ro-')
+    plt.subplot(1, 2, 2)
+    plt.plot(Y1, 'bo-')
+
+    for i in range(0, len(tp)):
+        point = traj[tp[i]]
+        plt.subplot(1, 2, 1)
+        plt.plot(tp[i], point[0], 'bo-')
+        plt.subplot(1, 2, 2)
+        plt.plot(tp[i], point[1], 'ro-')
+
+    plt.show()
+
     fittedModel = fitPolyRegression(traj, action, 2, tp)
     if rollout == 0:
         dynamicMat = fittedModel
@@ -151,21 +177,15 @@ for rollout in range(0, ndata):
 # print(rollout_data_array.shape)
 
 print(np.array(dynamicMat).shape)
-estimator = BayesianGaussianMixture(n_components=10, n_init=10, max_iter=300, weight_concentration_prior=1e-2, init_params='random', verbose=False)
+estimator = BayesianGaussianMixture(n_components=8, verbose=False)
 labels = estimator.fit_predict(np.array(dynamicMat))
-print(np.unique(labels))
+print(labels)
+weight_vector = np.array(estimator.weights_)
 print(estimator.weights_)
+
 '''
 
- X1 = [t[0] for t in traj]
-    Y1 = [t[1] for t in traj]
-    plt.subplot(1, ndata, rollout+1)
-    plt.plot(X1, Y1, 'ro-')
-
-    for i in range(0, len(tp)):
-        point = traj[tp[i]]
-        plt.subplot(1, ndata, rollout+1)
-        plt.plot(point[0], point[1], 'bo-')
+ 
         
         
 # print(linmod.shape)
