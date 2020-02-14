@@ -7,7 +7,7 @@ import pickle
 
 from sklearn.mixture import BayesianGaussianMixture
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import PolynomialFeatures
 
 
@@ -48,49 +48,44 @@ def smoothing(indices):
     return newIndices
 
 
-'''
-def fitLinModel(traj, action, transitions):
-    dmdc = DMDc(svd_rank=-1)
-    model = np.zeros((len(transitions), 1))
-    for k in range(0, len(transitions) - 1):
-        dmdc.fit(traj[transitions[k]:transitions[k + 1], :], action[transitions[k]:transitions[k + 1], :])
-        model[k] = dmdc.eigs
-    return model
-'''
-
-
 def fitPolyRegression(traj, action, polydegree, transitions):
     nseg = len(transitions)
     dim = traj.shape[1]
-    polynomial_features = PolynomialFeatures(degree=polydegree)
+    polynomial_features = PolynomialFeatures(degree=polydegree, interaction_only=True, include_bias=False)
     model = LinearRegression()
     dynamicMat = []
     rmse = 0
-    for k in range(0, nseg-1):
-        if transitions[k + 1] - transitions[k] > 1:  # ensuring at least one sample is there between two transition point
+    selectedSeg = []
+    for k in range(0, nseg - 1):
+        if transitions[k + 1] - transitions[k] > 2:  # ensuring at least one sample is there between two transition point
             coeffVect = []
             print("Segment Number: ", k)
+            selectedSeg.append(np.array([transitions[k], transitions[k + 1]]))
+
             for d in range(0, dim):
-                y_target = traj[(transitions[k]+1):transitions[k + 1], d]
-                x_train = traj[transitions[k]:(transitions[k + 1]-1), :]
-                u_train = action[transitions[k]:(transitions[k + 1]-1), :]
+                y_target = traj[(transitions[k] + 1):transitions[k + 1], d]
+                x_train = np.expand_dims(traj[transitions[k]:(transitions[k + 1] - 1), 1], axis=1)
+                u_train = action[transitions[k]:(transitions[k + 1] - 1), :]
                 feature_data_array = np.append(x_train, u_train, axis=1)
                 feature_poly = polynomial_features.fit_transform(feature_data_array)
                 model.fit(feature_poly, y_target)
                 y_pred = model.predict(feature_poly)
                 rmse = np.sqrt(mean_squared_error(y_target, y_pred))
-                plt.plot(y_target, 'r')
-                plt.plot(y_pred, 'b')
-                plt.show()
+                # plt.plot(y_target, 'r')
+                # plt.plot(y_pred, 'b')
+                # plt.show()
                 print("RMSE : ", rmse)
+                print("R2 score : ", r2_score(y_target,y_pred))
+                # print(model.coef_)
+                # print(model.intercept_)
                 if d == 0:
-                    coeffVect = np.array(model.coef_)
+                    coeffVect = np.array(model.coef_, model.intercept_)
                 else:
-                    coeffVect = np.hstack((coeffVect, model.coef_))
+                    coeffVect = np.hstack((coeffVect, model.coef_, model.intercept_))
 
             dynamicMat.append(coeffVect)
 
-    return np.array(dynamicMat)
+    return np.array(dynamicMat), np.array(selectedSeg)
 
 
 def identifyTransitions(traj, window_size):
@@ -103,7 +98,8 @@ def identifyTransitions(traj, window_size):
         demo_data_array[inc, :] = np.reshape(window, (1, dim * window_size))
         inc = inc + 1
 
-    estimator = BayesianGaussianMixture(n_components=10, n_init=10, max_iter=300, weight_concentration_prior=1e-2, init_params='random', verbose=False)
+    estimator = BayesianGaussianMixture(n_components=10, n_init=10, max_iter=300, weight_concentration_prior=1e-2,
+                                        init_params='random', verbose=False)
     labels = estimator.fit_predict(demo_data_array)
     # print(estimator.weights_)
     filtabels = smoothing(labels)
@@ -128,22 +124,33 @@ def identifyTransitions(traj, window_size):
     return transitions
 
 
+def getSeg(l, trajMat):
+    count = 0
+    for i in range(0, trajMat.shape[0]):
+        for j in range(0, trajMat[i][1].shape[0]):
+            if count == l:
+                return i, j
+            count = count + 1
+
+    print("Error: Did not get segment !! ")
+    return None
+
+
 f = open("blocks_exp_raw_data_rs_1_mm_d40.p", "rb")
 # data = pickle._Unpickler(f)
 # data.encoding = 'latin1'
 p = pickle.load(f, encoding='latin1')
 f.close()
+
+#Set parameters here
 window_size = 3
 rollout_data_array = []
+ncomponents = 10
+degree = 2
+ndata = 20
+rows = 3
 
-
-traj = p['X'][5, :, :]
-action = p['U'][5, :, :]
-tp = identifyTransitions(traj, window_size)
-
-ndata = 5
-
-
+trajMat = []
 for rollout in range(0, ndata):
     print("Rollout Number", rollout, '\n')
     traj = p['X'][rollout, :, :]
@@ -154,48 +161,40 @@ for rollout in range(0, ndata):
     X1 = [t[0] for t in traj]
     Y1 = [t[1] for t in traj]
     # plt.subplot(1, ndata, rollout + 1)
-    plt.subplot(1, 2, 1)
-    plt.plot(X1, 'ro-')
-    plt.subplot(1, 2, 2)
-    plt.plot(Y1, 'bo-')
+    plt.subplot(rows, ncomponents, rollout+1)
+    plt.plot(X1, Y1, 'ro-')
 
     for i in range(0, len(tp)):
         point = traj[tp[i]]
-        plt.subplot(1, 2, 1)
-        plt.plot(tp[i], point[0], 'bo-')
-        plt.subplot(1, 2, 2)
-        plt.plot(tp[i], point[1], 'ro-')
+        plt.subplot(rows, ncomponents, rollout+1)
+        plt.plot(point[0], point[1], 'bo-')
 
-    plt.show()
-
-    fittedModel = fitPolyRegression(traj, action, 2, tp)
+    fittedModel, selTraj = fitPolyRegression(traj, action, degree, tp)
+    trajMat.append(np.array([rollout, selTraj]))
     if rollout == 0:
         dynamicMat = fittedModel
     else:
         dynamicMat = np.concatenate((dynamicMat, fittedModel), axis=0)
 
-# print(rollout_data_array.shape)
-
+trajMat = np.array(trajMat)
+print(trajMat.shape)
 print(np.array(dynamicMat).shape)
-estimator = BayesianGaussianMixture(n_components=8, verbose=False)
+
+estimator = BayesianGaussianMixture(n_components=ncomponents,  n_init=10, max_iter=300, weight_concentration_prior=0.5, init_params='random', verbose=False)
 labels = estimator.fit_predict(np.array(dynamicMat))
 print(labels)
 weight_vector = np.array(estimator.weights_)
 print(estimator.weights_)
 
-'''
+for ncomp in range(0, ncomponents):
+    print("Showing segments for ", ncomp, " cluster ")
+    for l in range(0, len(labels)):
+        if ncomp == labels[l]:
+            rt, segtra = getSeg(l, trajMat)
+            exTraj = p['X'][rt, :, :]
+            X1 = exTraj[trajMat[rt][1][segtra][0]:trajMat[rt][1][segtra][1], 0]
+            Y1 = exTraj[trajMat[rt][1][segtra][0]:trajMat[rt][1][segtra][1], 1]
+            plt.subplot(rows, ncomponents, labels[l]+rollout+3)
+            plt.plot(X1, Y1, 'r')
 
- 
-        
-        
-# print(linmod.shape)
-X1 = [t[0] for t in traj]
-Y1 = [t[1] for t in traj]
-plt.plot(X1, Y1, 'ro-')
-
-for i in range(0, len(tp)):
-    point = traj[tp[i]]
-    plt.plot(point[0], point[1], 'bo-')
-'''
 plt.show()
-
