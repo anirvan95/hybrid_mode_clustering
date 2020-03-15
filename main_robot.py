@@ -4,14 +4,14 @@ import scipy
 import control.matlab as mt
 from pydmd import DMDc
 import pickle
-
+import sys
 from sklearn.mixture import BayesianGaussianMixture
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.cluster import DBSCAN
 from math import sqrt
-
+from sklearn.preprocessing import normalize
 
 def create_random_sys(mode, dim):
     sys_v = []
@@ -96,7 +96,7 @@ def gau_bh(pm, pv, qm, qv):
     norm = 0.5 * np.log(ldpqv/(np.sqrt(ldpv*ldqv)))
     # "Divergence" component (actually just scaled Mahalanobis distance)
     # 0.125 (\mu_q - \mu_p)^T \Sigma_{pq}^{-1} (\mu_q - \mu_p)
-    temp = np.matmul(diff.transpose(), np.linalg.inv(pqv))
+    temp = np.matmul(diff.transpose(), np.linalg.pinv(pqv))
     dist = 0.125 * np.matmul(temp, diff)
     return np.float(dist + norm)
 
@@ -113,12 +113,12 @@ def fitGaussianDistribution(traj, action, transitions):
             x_t_1 = traj[(transitions[k] + 1):transitions[k + 1], :]
             x_t = traj[transitions[k]:(transitions[k + 1] - 1), :]
             u_t = action[transitions[k]:(transitions[k + 1] - 1), :]
-            feature_data_array = np.hstack((x_t, u_t, x_t_1))
+            feature_data_array = np.hstack((x_t, x_t_1))
             meanGaussian = np.mean(feature_data_array, axis=0)
             covGaussian = np.cov(feature_data_array, rowvar=0)
             covFeature = covGaussian.flatten()
-            det = np.linalg.det(covGaussian)
-            if det != 0:
+            # det = np.linalg.det(covGaussian)
+            if np.linalg.cond(covGaussian) < 1/sys.float_info.epsilon:
                 # print("Segment Number: ", k)
                 selectedSeg.append(np.array([transitions[k], transitions[k + 1]]))
                 dynamicMat.append(np.append(meanGaussian, covGaussian))
@@ -178,17 +178,32 @@ def fitPolyRegression(traj, action, polydegree, transitions):
     return np.array(dynamicMat), np.array(selectedSeg)
 
 
-def identifyTransitions(traj, window_size):
-    total_size = traj.shape[0]
-    dim = traj.shape[1]
+def identifyTransitionsComplete(p, window_size):
+    joint_angles = (p['X'][:, :, 0:7])
+    joint_velocity = (p['X'][:, :, 7:14])
+    torque = (p['U'][:, :, :])
+    endeff_pose = (p['EX'][:, :, 0:6])
+    endeff_velocity = (p['EX'][:, :, 6:12])
+    force_feedback = (p['F'][:, :, :])
+    total_rollout = joint_velocity.shape[0]
+    traj = []
+    for index in range(0, total_rollout):
+        traj_feature = np.hstack((joint_angles[index, :, :], endeff_pose[index, :, :], force_feedback[index, :, :]))
+        traj.append(traj_feature)
+    traj = np.array(traj)
+    traj_time = traj.shape[1]
+    dim = traj.shape[2]
+    total_size = total_rollout*traj_time
     demo_data_array = np.zeros((total_size - window_size, dim * window_size))
     inc = 0
-    for i in range(window_size, total_size):
-        window = traj[i - window_size:i, :]
-        demo_data_array[inc, :] = np.reshape(window, (1, dim * window_size))
-        inc = inc + 1
+    for j in range(0, total_rollout):
+        trajC = traj[j, :, :]
+        for i in range(window_size, traj_time):
+            window = trajC[i - window_size:i, :]
+            demo_data_array[inc, :] = np.reshape(window, (1, dim * window_size))
+            inc = inc + 1
 
-    estimator = BayesianGaussianMixture(n_components=10, n_init=10, max_iter=300, weight_concentration_prior=1e-2,
+    estimator = BayesianGaussianMixture(n_components=10, n_init=10, max_iter=300, weight_concentration_prior=1e-1,
                                         init_params='random', verbose=False)
     labels = estimator.fit_predict(demo_data_array)
     # print(estimator.weights_)
@@ -209,8 +224,44 @@ def identifyTransitions(traj, window_size):
     transitions.append(0)
     transitions.append(total_size - 1)
     transitions.sort()
+    print("[TSC] Discovered Transitions (number): ", len(transitions))
 
-    # print("[TSC] Discovered Transitions (time): ", transitions)
+    return transitions
+
+
+def identifyTransitions(traj, window_size):
+    total_size = traj.shape[0]
+    dim = traj.shape[1]
+    demo_data_array = np.zeros((total_size - window_size, dim * window_size))
+    inc = 0
+    for i in range(window_size, total_size):
+        window = traj[i - window_size:i, :]
+        demo_data_array[inc, :] = np.reshape(window, (1, dim * window_size))
+        inc = inc + 1
+
+    estimator = BayesianGaussianMixture(n_components=10, n_init=10, max_iter=300, weight_concentration_prior=0.5,
+                                        init_params='random', verbose=True)
+    labels = estimator.fit_predict(demo_data_array)
+    # print(estimator.weights_)
+    filtabels = smoothing(labels)
+    # print(labels)
+    inc = 0
+    transitions = []
+    for j in range(window_size, total_size):
+
+        if inc == 0 or j == window_size:
+            pass  # self._transitions.append((i,0))
+        elif j == (total_size - 1):
+            pass  # self._transitions.append((i,n-1))
+        elif filtabels[inc - 1] != filtabels[inc]:
+            transitions.append(j - window_size)
+        inc = inc + 1
+
+    transitions.append(0)
+    transitions.append(total_size - 1)
+    transitions.sort()
+
+    print("[TSC] Discovered Transitions (number): ", len(transitions))
     return transitions
 
 
@@ -226,7 +277,7 @@ def getSeg(l, trajMat):
     return None
 
 
-f = open("blocks_exp_raw_data_rs_1_mm_d40.p", "rb")
+f = open("yumi_peg_exp_new_raw_data_train.p", "rb")
 # data = pickle._Unpickler(f)
 # data.encoding = 'latin1'
 p = pickle.load(f, encoding='latin1')
@@ -237,45 +288,53 @@ window_size = 3
 rollout_data_array = []
 ncomponents = 10
 degree = 2
-ndata = 49
+ndata = 15
 # for plotting
-rows = 5
-cols = 15
+rows = 3
+cols = 10
 
-trajMat = []
+trajC = p['X'][:, :, :]
+tp = identifyTransitionsComplete(p, window_size)
+
+'''
 for rollout in range(0, ndata):
     print("Rollout Number", rollout, '\n')
-    traj = p['X'][rollout, :, :]
-    action = p['U'][rollout, :, :]
+    joint_angles = (p['X'][rollout, :, 0:7])
+    joint_velocity = (p['X'][rollout, :, 7:14])
+    torque = (p['U'][rollout, :, :])
+    endeff_pose = (p['EX'][rollout, :, 0:6])
+    endeff_velocity = (p['EX'][rollout, :, 6:12])
+    force_feedback = (p['F'][rollout, :, :])
+    power = np.zeros((len(torque),1))
+    for index in range(0, len(force_feedback)):
+        power[index] = np.dot(endeff_velocity[index, :], force_feedback[index, :])
 
-    tp = identifyTransitions(traj, window_size)
-
-    X1 = [t[0] for t in traj]
-    Y1 = [t[1] for t in traj]
-    # plt.subplot(1, ndata, rollout + 1)
+    transitionFeatureArray = np.hstack((joint_angles, endeff_pose, force_feedback))
+    action = torque
+    tp = identifyTransitions(power, window_size)
+    traj = endeff_velocity
     plt.subplot(rows, cols, rollout + 1)
-    plt.plot(X1, Y1, 'ro-')
+    plt.plot(power, 'r')
 
     for i in range(0, len(tp)):
-        point = traj[tp[i]]
+        point = power[tp[i]]
         plt.subplot(rows, cols, rollout + 1)
-        plt.plot(point[0], point[1], 'bo-')
+        plt.plot(tp[i], point[0], 'bo-')
 
-    # fittedModel, selTraj = fitPolyRegression(traj, action, degree, tp)
-    fittedModel, selTraj = fitGaussianDistribution(traj, action, tp)
+    fittedModel, selTraj = fitPolyRegression(traj, action, degree, tp)
+    # fittedModel, selTraj = fitGaussianDistribution(traj, action, tp)
     trajMat.append(np.array([rollout, selTraj]))
     if rollout == 0:
         dynamicMat = fittedModel
     else:
         dynamicMat = np.concatenate((dynamicMat, fittedModel), axis=0)
 
-
 trajMat = np.array(trajMat)
-print(trajMat.shape)
+print(trajMat)
 print(np.array(dynamicMat).shape)
 
 # DPGMM based clustering
-'''
+
 estimator = BayesianGaussianMixture(n_components=ncomponents, n_init=10, max_iter=300, weight_concentration_prior=1,
                                     init_params='random', verbose=False)
 labels = estimator.fit_predict(np.array(dynamicMat))
@@ -283,9 +342,9 @@ print(labels)
 weight_vector = np.array(estimator.weights_)
 print(estimator.weights_)
 '''
-
+'''
 # DBSCAN based clustering
-db = DBSCAN(eps=10, min_samples=2, metric=KLDdistance)
+db = DBSCAN(eps=5, min_samples=2, metric=KLDdistance)
 labels = db.fit_predict(dynamicMat)
 print(labels)
 n_clusters_ = len(set(labels)) - (1 if -1 in labels else 0)
@@ -300,9 +359,8 @@ for ncomp in range(0, ncomponents):
         if ncomp == labels[l]:
             rt, segtra = getSeg(l, trajMat)
             exTraj = p['X'][rt, :, :]
-            X1 = exTraj[trajMat[rt][1][segtra][0]:trajMat[rt][1][segtra][1], 0]
-            Y1 = exTraj[trajMat[rt][1][segtra][0]:trajMat[rt][1][segtra][1], 1]
+            X1 = exTraj[trajMat[rt][1][segtra][0]:trajMat[rt][1][segtra][1], :]
             plt.subplot(rows, cols, labels[l] + rollout + 3)
-            plt.plot(X1, Y1, 'r')
-
+            plt.plot(X1, 'r')
+'''
 plt.show()
