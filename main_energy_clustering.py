@@ -105,7 +105,7 @@ def identifyTransitions(traj, window_size):
         demo_data_array[inc, :] = np.reshape(window, (1, dim * window_size))
         inc = inc + 1
 
-    estimator = BayesianGaussianMixture(n_components=5, n_init=10, max_iter=300, weight_concentration_prior=0.001,
+    estimator = BayesianGaussianMixture(n_components=5, n_init=10, max_iter=300, weight_concentration_prior=0.01,
                                         init_params='random', verbose=False)
     labels = estimator.fit_predict(demo_data_array)
     # print(estimator.weights_)
@@ -200,7 +200,7 @@ for rollout in range(0, ndata):
         plt.plot(tp[i], point[0], 'bo-')
 
     # create trajectory of joint velocity, joint angles and cartesian positions
-    traj = cart_position[:, 0:4]
+    traj = cart_position[:, 0:3]
     action = joint_torques
     fittedModel, selTraj = fitGaussianDistribution(traj, action, tp)
     # storing the fitted distribution for all the rollouts
@@ -216,13 +216,18 @@ print(np.array(trajMat).shape)
 trajMat = np.array(trajMat)
 # DBSCAN based clustering
 
-db = DBSCAN(eps=5, min_samples=2, metric=computeDistance)
+db = DBSCAN(eps=3, min_samples=3, metric=computeDistance)
 labels = db.fit_predict(dynamicMat)
 print(labels)
 n_clusters_ = len(set(labels)) - (1 if -1 in labels else 0)
 n_noise_ = list(labels).count(-1)
 print('Estimated number of clusters: %d' % n_clusters_)
 print('Estimated number of noise points: %d' % n_noise_)
+cart_traj_all = np.array(p['EX'][:, :, 0])
+print(cart_traj_all.shape)
+plt.subplot(rows, cols, rollout + 2)
+plt.plot(cart_traj_all.transpose())
+
 
 ncomponents = len(np.unique(labels))
 for ncomp in range(0, ncomponents):
@@ -230,9 +235,10 @@ for ncomp in range(0, ncomponents):
     for l in range(0, len(labels)):
         if ncomp == labels[l]:
             rt, segtra = getSeg(l, trajMat)
-            exTraj = p['EX'][rt, :, :]
-            X1 = exTraj[trajMat[rt][1][segtra][0]:trajMat[rt][1][segtra][1], :]
+            exTraj = p['EX'][rt, :, 0]
+            X1 = exTraj[trajMat[rt][1][segtra][0]:trajMat[rt][1][segtra][1]]
             plt.subplot(rows, cols, labels[l] + rollout + 3)
             plt.plot(X1, 'r')
 
 plt.show()
+
